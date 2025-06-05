@@ -54,6 +54,7 @@ from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_
 from diffusers.utils.torch_utils import is_compiled_module
 
 from pipeline_flux_control_removal import FluxControlRemovalPipeline
+from utils import PairedRandomCrop
 
 if is_wandb_available():
     import wandb
@@ -721,11 +722,6 @@ class TrainRemovalDataset(torch.utils.data.Dataset):
         self.maskroot = os.path.join(self.root, 'sam_mask') # binray mask for inpainting
         self.imageroot = os.path.join(self.root, 'img') # target image: BG
         self.bgroot = os.path.join(self.root, 'gt_new') # target image: BG
-        
-        # RORD专用，其他数据集请注释。
-        # self.maskroot = os.path.join(self.root, 'masks') # binray mask for inpainting
-        # self.imageroot = os.path.join(self.root, 'images') # target image: BG
-        # self.bgroot = os.path.join(self.root, 'background') # target image: BG
 
         self.mask_name = os.listdir(self.maskroot)
         self._length = len(self.mask_name)
@@ -782,21 +778,24 @@ def prepare_train_dataset(dataset, accelerator):
         ]
     )
 
+    crop_transform = PairedRandomCrop(size=args.resolution)
+    
     def preprocess_train(examples):
         images = examples["images"].convert("RGB") if not isinstance(examples["images"], str) else Image.open(examples["images"]).convert("RGB")
-        images = image_transforms(images) 
-
+        backgrounds = examples["background"].convert("RGB") if not isinstance(examples["background"], str) else Image.open(examples["background"]).convert("RGB")
         masks = examples["masks"].convert("L") if not isinstance(examples["masks"], str) else Image.open(examples["masks"]).convert("L")
-        masks = mask_transforms(masks) # 1是要inpaint的区域，0是背景
+        
+        images, backgrounds, masks = crop_transform(images, backgrounds, masks)
+        backgrounds = image_transforms(backgrounds)
+        images = image_transforms(images) 
+        masks = mask_transforms(masks) # 1 to be inpaint, 0 to be kept
         
         masked_images = images.clone()
         masked_images[(masks > 0.5).repeat(3, 1, 1)] = -1
         foreground_images = images.clone()
         foreground_images[(masks < 0.5).repeat(3, 1, 1)] = -1
-        masks = 1 - masks # 0是要inpaint的区域，1是背景
-        
-        backgrounds = examples["background"].convert("RGB") if not isinstance(examples["background"], str) else Image.open(examples["background"]).convert("RGB")
-        backgrounds = image_transforms(backgrounds)
+        masks = 1 - masks # 0 to be inpaint, 1 to be kept
+
         
         examples["pixel_values"] = backgrounds
         examples["images"] = images
@@ -823,7 +822,9 @@ def collate_fn(examples):
     foreground_images = foreground_images.to(memory_format=torch.contiguous_format).float()
     masks = torch.stack([example["masks"] for example in examples])
     masks = masks.to(memory_format=torch.contiguous_format).float()
-    # save_dir = '/home/yinzijin/BrushNet-main/examples/brushnet/image_temp'
+
+    # To visualize the dataloader output, uncomment the following lines
+    # save_dir = './test_dataloader'
     # os.makedirs(save_dir, exist_ok=True)  
 
     # for i, example in enumerate(examples):
@@ -1314,22 +1315,6 @@ def main(args):
                 pixel_masked_image_latents = encode_images(
                     batch["masked_images"], vae.to(accelerator.device), weight_dtype
                 )
-
-                # masks = batch["masks"][:, 0, :, :]
-                # masks = masks.view(
-                #     B, 
-                #     2*(int(H) // (vae_scale_factor * 2)), 
-                #     vae_scale_factor, 
-                #     2*(int(W) // (vae_scale_factor * 2)), 
-                #     vae_scale_factor
-                # )
-                # masks = masks.permute(0, 2, 4, 1, 3)
-                # masks = masks.reshape(
-                #     masks.shape[0], 
-                #     vae_scale_factor * vae_scale_factor, 
-                #     2*(int(H) // (vae_scale_factor * 2)), 
-                #     2*(int(W) // (vae_scale_factor * 2))
-                # ).to(weight_dtype)
 
                 masks = torch.nn.functional.interpolate(
                     batch["masks"], size=(batch["masks"].shape[2] // vae_scale_factor , batch["masks"].shape[3] // vae_scale_factor)
