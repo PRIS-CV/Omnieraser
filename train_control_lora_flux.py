@@ -658,61 +658,6 @@ def parse_args(input_args=None):
     return args
 
 
-def get_train_dataset(args, accelerator):
-    dataset = None
-    if args.dataset_name is not None:
-        # Downloading and loading a dataset from the hub.
-        dataset = load_dataset(
-            args.dataset_name,
-            args.dataset_config_name,
-            cache_dir=args.cache_dir,
-        )
-    if args.jsonl_for_train is not None:
-        # load from json
-        dataset = load_dataset("json", data_files=args.jsonl_for_train, cache_dir=args.cache_dir)
-        dataset = dataset.flatten_indices()
-    # Preprocessing the datasets.
-    # We need to tokenize inputs and targets.
-    column_names = dataset["train"].column_names
-
-    # 6. Get the column names for input/target.
-    if args.image_column is None:
-        image_column = column_names[0]
-        logger.info(f"image column defaulting to {image_column}")
-    else:
-        image_column = args.image_column
-        if image_column not in column_names:
-            raise ValueError(
-                f"`--image_column` value '{args.image_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-            )
-
-    if args.caption_column is None:
-        caption_column = column_names[1]
-        logger.info(f"caption column defaulting to {caption_column}")
-    else:
-        caption_column = args.caption_column
-        if caption_column not in column_names:
-            raise ValueError(
-                f"`--caption_column` value '{args.caption_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-            )
-
-    if args.conditioning_image_column is None:
-        conditioning_image_column = column_names[2]
-        logger.info(f"conditioning image column defaulting to {conditioning_image_column}")
-    else:
-        conditioning_image_column = args.conditioning_image_column
-        if conditioning_image_column not in column_names:
-            raise ValueError(
-                f"`--conditioning_image_column` value '{args.conditioning_image_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-            )
-
-    with accelerator.main_process_first():
-        train_dataset = dataset["train"].shuffle(seed=args.seed)
-        if args.max_train_samples is not None:
-            train_dataset = train_dataset.select(range(args.max_train_samples))
-    return train_dataset
-
-
 class TrainRemovalDataset(torch.utils.data.Dataset):
     def __init__(self,
                  data_root,
@@ -779,7 +724,7 @@ def prepare_train_dataset(dataset, accelerator):
     )
 
     crop_transform = PairedRandomCrop(size=args.resolution)
-    
+
     def preprocess_train(examples):
         images = examples["images"].convert("RGB") if not isinstance(examples["images"], str) else Image.open(examples["images"]).convert("RGB")
         backgrounds = examples["background"].convert("RGB") if not isinstance(examples["background"], str) else Image.open(examples["background"]).convert("RGB")
